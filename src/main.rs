@@ -41,7 +41,7 @@ fn create_file(path: &str) -> io::Result<File> {
 
 fn read_file_or_create(path: &str, is_append: bool) -> io::Result<File> {
     if is_append {
-	match OpenOptions::new().write(true).truncate(true).open(path) {
+	match OpenOptions::new().write(true).append(true).open(path) {
 	    Ok(file) => Ok(file),
 	    Err(_) => {
 		let file = File::create(path);
@@ -56,7 +56,7 @@ fn read_file_or_create(path: &str, is_append: bool) -> io::Result<File> {
 	    }
 	}
     } else {
-	match File::open(path) {
+	match File::create(path) {
 	    Ok(file) => Ok(file),
 	    Err(_) => match create_file(path) {
 		Ok(f) => Ok(f),
@@ -103,7 +103,7 @@ impl Todo {
 impl TodoInput {
     fn line(&self, id: &str) -> String {
 	format!(
-	    "{},{},{},{}",
+	    "{},{},{},{}\n",
 	    id, self.name, self.status as usize, self.description
 	)
     }
@@ -114,7 +114,7 @@ fn create(input: TodoInput) -> Result<String, String> {
 	Ok(file) => {
 	    let id = Uuid::new_v4();
 	    let line = input.line(&id.to_string());
-	    match file.write(line.as_bytes()) {
+	    match file.write_all(line.as_bytes()) {
 		Ok(_) => Ok(id.to_string()),
 		Err(e) => Err(format!("Error: {}", e)),
 	    }
@@ -126,7 +126,8 @@ fn update(target_id: &str, input: TodoUpdateInput) -> Result<&str, String> {
     let mut result: String = format!("id,name,status,description\n");
     let status = input.status;
 
-    for line in read_to_string(TODO_PATH).unwrap().lines() {
+    for line in read_to_string(TODO_PATH).unwrap().lines().skip(1) {
+	println!("{}", line);
 	let items: Vec<&str> = line.split(",").collect();
 	if items.len() != 4 {
 	    continue;
@@ -136,6 +137,7 @@ fn update(target_id: &str, input: TodoUpdateInput) -> Result<&str, String> {
 	let st: TodoStatus = TodoStatus::from_usize(stt).unwrap();
 	let line: String = match target_id == id {
 	    true => {
+		println!("match!");
 		let input = Todo {
 		    id,
 		    todo: TodoInput {
@@ -158,10 +160,14 @@ fn update(target_id: &str, input: TodoUpdateInput) -> Result<&str, String> {
 		input.line()
 	    }
 	};
-	result = format!("{}\n{}", result, line);
+	result = format!("{}{}\n", result, line);
     }
     let rb = result.as_bytes();
-    match File::open(TODO_PATH) {
+    match OpenOptions::new()
+	.write(true)
+	.truncate(true)
+	.open(TODO_PATH)
+    {
 	Ok(f) => {
 	    let mut fm = f;
 	    let _ = fm.write_all(&rb);
@@ -174,15 +180,17 @@ fn update(target_id: &str, input: TodoUpdateInput) -> Result<&str, String> {
 fn delete(target_id: &str) -> Result<&str, String> {
     let mut result: String = format!("id,name,status,description\n");
 
-    for line in read_to_string(TODO_PATH).unwrap().lines() {
+    for line in read_to_string(TODO_PATH).unwrap().lines().skip(1) {
 	let items: Vec<&str> = line.split(",").collect();
 	if items.len() != 4 {
 	    continue;
 	}
 	let id: String = items[0].to_string();
-	let line: String = match target_id == id {
-	    true => continue,
+	// println!("{} === {} = {}", target_id, id, target_id == id);
+	let line = match target_id == id {
+	    true => format!(""),
 	    _ => {
+		println!("running not target id");
 		let stt: usize = items[2].parse().unwrap();
 		let st: TodoStatus = TodoStatus::from_usize(stt).unwrap();
 		let input = Todo {
@@ -196,22 +204,29 @@ fn delete(target_id: &str) -> Result<&str, String> {
 		input.line()
 	    }
 	};
-	result = format!("{}\n{}", result, line);
+	result = format!("{}{}", result, line);
     }
+    println!("# check\n{}", result);
     let rb = result.as_bytes();
-    match File::open(TODO_PATH) {
+    let rs = match OpenOptions::new()
+	.write(true)
+	.truncate(true)
+	.open(TODO_PATH) {
 	Ok(f) => {
 	    let mut fm = f;
-	    let _ = fm.write_all(&rb);
-	    Ok(target_id)
+	    match fm.write_all(&rb) {
+		Ok(_) => Ok(target_id),
+		Err(e) => Err(format!("error(write_all): {}", e)),
+	    }
 	}
-	Err(e) => Err(format!("error: {}", e)),
-    }
+	Err(e) => Err(format!("error(file open): {}", e)),
+    };
+    rs
 }
 fn list() -> Option<Vec<Todo>> {
     let mut result = Vec::new();
 
-    for line in read_to_string(TODO_PATH).unwrap().lines() {
+    for line in read_to_string(TODO_PATH).unwrap().lines().skip(1) {
 	let items: Vec<&str> = line.split(",").collect();
 	if items.len() != 4 {
 	    return None;
@@ -246,7 +261,8 @@ fn help() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let cmd = args[0].as_str();
+    let cmd = args[1].as_str();
+    println!("cmd: {}", cmd);
     match cmd {
 	"help" => help(),
 	"create" => {
@@ -271,7 +287,7 @@ fn main() {
 		Some(l) => {
 		    for x in l {
 			println!(
-			    "id: {}, name: {}, status: {}, \n\tdescription: {}",
+			    "id: {}, name: {}, status: {}, description: {}",
 			    x.id, x.todo.name, x.todo.status, x.todo.description
 			);
 		    }
@@ -281,11 +297,11 @@ fn main() {
 	    }
 	}
 	"update" => {
-	    let id: String = args[1].parse().unwrap();
-	    let name: String = args[2].parse().unwrap();
-	    let sstatus: usize = args[3].parse().unwrap();
+	    let id: String = args[2].parse().unwrap();
+	    let name: String = args[3].parse().unwrap();
+	    let sstatus: usize = args[4].parse().unwrap();
 	    let status: TodoStatus = TodoStatus::from_usize(sstatus).unwrap();
-	    let description: String = args[4].parse().unwrap();
+	    let description: String = args[5].parse().unwrap();
 	    let rst = update(
 		&id,
 		TodoUpdateInput {
@@ -300,10 +316,17 @@ fn main() {
 	    }
 	}
 	"delete" => {
-	    let id: String = args[1].parse().unwrap();
+	    let id: String = args[2].parse().unwrap();
 	    match delete(id.as_str()) {
 		Ok(iid) => println!("{} deleted.", iid),
 		Err(e) => eprintln!("{} delete failed.", e),
+	    }
+	}
+	"detail" => {
+	    let id: String = args[2].parse().unwrap();
+	    match detail(id.as_str()) {
+		Some(t) => println!("{}", t.line()),
+		_ => println!("none."),
 	    }
 	}
 	_ => (),
@@ -324,23 +347,23 @@ fn detail(id: &str) -> Option<Todo> {
     }
 }
 
-fn change_status(id: &str, status: TodoStatus) -> Result<&str, String> {
-    update(
-	id,
-	TodoUpdateInput {
-	    name: None,
-	    description: None,
-	    status: Some(status),
-	},
-    )
-}
-
-fn change_doing_status(id: &str) -> Result<&str, String> {
-    change_status(id, TodoStatus::Doing)
-}
-fn change_doit_status(id: &str) -> Result<&str, String> {
-    change_status(id, TodoStatus::Doit)
-}
+// fn change_status(id: &str, status: TodoStatus) -> Result<&str, String> {
+//     update(
+//         id,
+//         TodoUpdateInput {
+//             name: None,
+//             description: None,
+//             status: Some(status),
+//         },
+//     )
+// }
+//
+// fn change_doing_status(id: &str) -> Result<&str, String> {
+//     change_status(id, TodoStatus::Doing)
+// }
+// fn change_doit_status(id: &str) -> Result<&str, String> {
+//     change_status(id, TodoStatus::Doit)
+// }
 
 #[cfg(test)]
 mod tests {
@@ -352,7 +375,10 @@ mod tests {
 	let rst = fs::remove_file(TODO_PATH);
 	match rst {
 	    Ok(_) => (),
-	    Err(_e) => panic!(),
+	    Err(_e) => {
+		println!("{}", _e);
+		()
+	    }
 	}
     }
     #[test]
@@ -375,7 +401,7 @@ mod tests {
 		    "id,name,status,description\n{},{},{},{}",
 		    id,
 		    "test",
-		    TodoStatus::Todo,
+		    TodoStatus::Todo as usize,
 		    "koreha test",
 		);
 		assert_eq!(contents, expect);
@@ -384,6 +410,97 @@ mod tests {
 	    Err(e) => {
 		eprintln!("{}", e);
 		assert!(false)
+	    }
+	}
+	cleanup();
+    }
+    #[test]
+    fn multi_create_todo() {
+	cleanup();
+	let t = TodoInput {
+	    name: String::from("test"),
+	    description: String::from("koreha test"),
+	    status: TodoStatus::Todo,
+	};
+	let t2 = TodoInput {
+	    name: String::from("test2"),
+	    description: String::from("koreha test2"),
+	    status: TodoStatus::Todo,
+	};
+	// 実処理
+	match create(t) {
+	    Ok(id) => {
+		// todoファイル存在確認
+		let exists = std::path::Path::new(TODO_PATH).exists();
+		let contents = read_to_string(TODO_PATH).unwrap();
+		let expect = format!(
+		    "id,name,status,description\n{},{},{},{}",
+		    id,
+		    "test",
+		    TodoStatus::Todo as usize,
+		    "koreha test",
+		);
+		assert_eq!(contents, expect);
+		assert!(exists)
+	    }
+	    Err(e) => {
+		eprintln!("{}", e);
+		assert!(false)
+	    }
+	}
+	match create(t2) {
+	    Ok(id) => {
+		// todoファイル存在確認
+		let exists = std::path::Path::new(TODO_PATH).exists();
+		let contents = read_to_string(TODO_PATH).unwrap();
+		let expect = format!(
+		    "id,name,status,description\n{},{},{},{}",
+		    id,
+		    "test2",
+		    TodoStatus::Todo as usize,
+		    "koreha test2",
+		);
+		assert_eq!(contents, expect);
+		assert!(exists)
+	    }
+	    Err(e) => {
+		eprintln!("{}", e);
+		assert!(false)
+	    }
+	}
+	cleanup();
+    }
+    #[test]
+    fn delete_todo() {
+	cleanup();
+	let t = TodoInput {
+	    name: String::from("test"),
+	    description: String::from("koreha test"),
+	    status: TodoStatus::Todo,
+	};
+	// 実処理
+	let id = match create(t) {
+	    Ok(i) => i,
+	    Err(_e) => "".to_string(),
+	};
+	match fs::read_to_string(TODO_PATH) {
+	    Ok(s) => println!("contents: {}\n", s),
+	    Err(_) => (),
+	}
+	println!("target: {}\n", id);
+	let did = delete(&id);
+	match fs::read_to_string(TODO_PATH) {
+	    Ok(s) => println!("contents: {}\n", s),
+	    Err(_) => (),
+	}
+	match did {
+	    Ok(ddid) => {
+		let etodo = detail(&ddid);
+		let exists = etodo.is_none();
+		assert!(exists);
+	    }
+	    Err(_e) => {
+		assert!(false);
 	    }
 	}
 	cleanup();
@@ -412,7 +529,7 @@ mod tests {
 	    Some(at) => {
 		format!(
 		    "{},{},{},{}",
-		    at.id, at.todo.name, at.todo.status, at.todo.description
+		    at.id, at.todo.name, at.todo.status as usize, at.todo.description
 		)
 	    }
 	    None => {
@@ -426,7 +543,7 @@ mod tests {
 		};
 		format!(
 		    "{},{},{},{}",
-		    at.id, at.todo.name, at.todo.status, at.todo.description
+		    at.id, at.todo.name, at.todo.status as usize, at.todo.description
 		)
 	    }
 	};
@@ -440,7 +557,7 @@ mod tests {
 	};
 	let ext_line = format!(
 	    "{},{},{},{}",
-	    ext.id, ext.todo.name, ext.todo.status, ext.todo.description
+	    ext.id, ext.todo.name, ext.todo.status as usize, ext.todo.description
 	);
 	assert_eq!(ext_line, act_line);
 	cleanup();
